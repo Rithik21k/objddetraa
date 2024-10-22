@@ -1,102 +1,80 @@
-from flask import Flask, request, redirect, url_for, render_template
-import os
+import numpy as np
 import cv2
 from ultralytics import YOLO
 import random
-import numpy as np
 
-app = Flask(__name__)
+# Load COCO class names from a file
+with open("utils/coco.txt", "r") as my_file:
+    class_list = my_file.read().split("\n")
 
-# Directory where uploaded videos will be stored
-UPLOAD_FOLDER = 'uploads/'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# Generate random colors for each class
+detection_colors = []
+for _ in range(len(class_list)):
+    detection_colors.append((random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)))
 
-# Create the folder if it doesn't exist
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# Load YOLOv8 model (make sure the path to your model file is correct)
+model = YOLO("yolov8n.pt")  # YOLOv8n is a smaller version for faster performance
 
-# Load class list and generate colors (same as before)
-my_file = open("utils/coco.txt", "r")
-class_list = my_file.read().split("\n")
-my_file.close()
+# Set frame width and height
+frame_wid = 640
+frame_hyt = 480
 
-detection_colors = [(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for _ in range(len(class_list))]
+# Open video file or capture device (e.g., webcam)
+cap = cv2.VideoCapture("inference/videos/afriq0.MP4")  # Use video file or webcam (change to 0 for webcam)
 
-# Load YOLO model
-model = YOLO("weights/yolov8n.pt", "v8")
+if not cap.isOpened():
+    print("Cannot open camera or video file")
+    exit()
 
-@app.route('/')
-def upload_form():
-    return render_template('upload.html')
-
-@app.route('/upload', methods=['POST'])
-def upload_video():
-    if 'video' not in request.files:
-        return 'No file part'
+while True:
+    ret, frame = cap.read()
     
-    file = request.files['video']
-    
-    if file.filename == '':
-        return 'No selected file'
-    
-    if file:
-        video_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-        file.save(video_path)
+    if not ret:
+        print("Can't receive frame (stream end?). Exiting ...")
+        break
 
-        # Call the object detection function here
-        detect_objects(video_path)
-        
-        return 'Video uploaded and processed successfully!'
+    # Resize frame if necessary (optional)
+    frame = cv2.resize(frame, (frame_wid, frame_hyt))
 
-def detect_objects(video_path):
-    cap = cv2.VideoCapture(video_path)
-    
-    if not cap.isOpened():
-        print("Cannot open video file")
-        return
+    # Perform object detection
+    results = model.predict(source=frame, conf=0.45, save=False)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    # Process detection results
+    for result in results:
+        boxes = result.boxes  # Detected bounding boxes
 
-        detect_params = model.predict(source=[frame], conf=0.45, save=False)
-        DP = detect_params[0].numpy()
+        for box in boxes:
+            clsID = int(box.cls.numpy()[0])  # Class ID of the object
+            conf = float(box.conf.numpy()[0])  # Confidence of the detection
+            bb = box.xyxy.numpy()[0]  # Bounding box coordinates
 
-        if len(DP) != 0:
-            for i in range(len(detect_params[0])):
-                boxes = detect_params[0].boxes
-                box = boxes[i]
-                clsID = box.cls.numpy()[0]
-                conf = box.conf.numpy()[0]
-                bb = box.xyxy.numpy()[0]
+            # Draw the bounding box on the frame
+            cv2.rectangle(
+                frame,
+                (int(bb[0]), int(bb[1])),
+                (int(bb[2]), int(bb[3])),
+                detection_colors[clsID],
+                3
+            )
 
-                cv2.rectangle(
-                    frame,
-                    (int(bb[0]), int(bb[1])),
-                    (int(bb[2]), int(bb[3])),
-                    detection_colors[int(clsID)],
-                    3
-                )
+            # Display class name and confidence score
+            cv2.putText(
+                frame,
+                f"{class_list[clsID]} {conf:.2f}%",
+                (int(bb[0]), int(bb[1]) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (255, 255, 255),
+                2
+            )
 
-                font = cv2.FONT_HERSHEY_COMPLEX
-                cv2.putText(
-                    frame,
-                    class_list[int(clsID)] + " " + str(round(conf, 3)) + "%",
-                    (int(bb[0]), int(bb[1]) - 10),
-                    font,
-                    1,
-                    (255, 255, 255),
-                    2
-                )
+    # Show the frame with detection results
+    cv2.imshow("ObjectDetection", frame)
 
-        cv2.imshow("ObjectDetection", frame)
-        
-        if cv2.waitKey(1) == ord("q"):
-            break
+    # Exit the loop when "Q" is pressed
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-    cap.release()
-    cv2.destroyAllWindows()
-
-if __name__ == '__main__':
-    app.run(debug=True)
+# Release video capture object and close windows
+cap.release()
+cv2.destroyAllWindows()
